@@ -510,6 +510,16 @@ class SIIUPPApp:
 
 def main():
     root = tk.Tk()
+
+    def on_uncaught_error(exc_type, exc_value, exc_traceback):
+        import traceback
+        err_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        messagebox.showerror(
+            "Error Inesperado",
+            f"Ocurrió un error inesperado:\n\n{exc_value}\n\nDetalles técnicos:\n{err_msg[-400:]}"
+        )
+
+    root.report_callback_exception = on_uncaught_error
     app = SIIUPPApp(root)
     root.mainloop()
 

@@ -56,15 +56,23 @@ class BrowserManager:
         except Exception:
             pass
 
-        # Si no se pudo conectar, abrir una nueva instancia
+        # Si no se pudo conectar, abrir una nueva instancia de Chrome limpia y amigable
         try:
             options = Options()
             options.add_argument("--start-maximized")
+            # Evitar banderas intrusivas de automatización para que el captcha y login funcionen sin trabas
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_experimental_option("useAutomationExtension", False)
+            
             self.driver = webdriver.Chrome(options=options)
             self.driver.get(self.UPP_LOGIN_URL)
             return True, "Nueva ventana de Chrome abierta en el portal de UPP."
         except Exception as e:
-            return False, f"Error al abrir Chrome: {e}"
+            err_msg = str(e)
+            if "binary_location" in err_msg.lower() or "cannot find chrome" in err_msg.lower():
+                return False, "No se encontró Google Chrome instalado en tu computadora. Asegúrate de tener instalado Chrome estándar."
+            return False, f"No se pudo iniciar Chrome: {err_msg}"
 
     def is_connected(self) -> bool:
         if self.driver is None:
