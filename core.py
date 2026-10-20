@@ -4,11 +4,21 @@ Usa únicamente librerías estándar y openpyxl (puro Python, sin DLLs C de NumP
 """
 
 import re
+import socket
 import unicodedata
 import openpyxl
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+
+
+def is_port_open(port: int = 9222, host: str = "127.0.0.1") -> bool:
+    """Verifica en milisegundos si un puerto está abierto sin congelar Selenium."""
+    try:
+        with socket.create_connection((host, port), timeout=0.2):
+            return True
+    except (OSError, ConnectionRefusedError):
+        return False
 
 
 def normalize_text(text: str) -> str:
@@ -41,19 +51,20 @@ class BrowserManager:
 
     def connect_or_launch(self, remote_port: int = 9222) -> tuple[bool, str]:
         """
-        Intenta conectarse a un Chrome ya abierto con puerto de depuración.
+        Intenta conectarse a un Chrome ya abierto si el puerto está escuchando.
         Si no está disponible, lanza una nueva instancia de Chrome y navega al login.
         """
-        # 1. Intentar conectar a Chrome existente en el puerto
-        try:
-            options = Options()
-            options.add_experimental_option("debuggerAddress", f"127.0.0.1:{remote_port}")
-            test_driver = webdriver.Chrome(options=options)
-            _ = test_driver.title
-            self.driver = test_driver
-            return True, f"Conectado a Chrome existente en 127.0.0.1:{remote_port}"
-        except Exception:
-            pass
+        # 1. Intentar conectar a Chrome existente solo si el puerto está activo (rápido, sin freeze)
+        if is_port_open(remote_port):
+            try:
+                options = Options()
+                options.add_experimental_option("debuggerAddress", f"127.0.0.1:{remote_port}")
+                test_driver = webdriver.Chrome(options=options)
+                _ = test_driver.title
+                self.driver = test_driver
+                return True, f"Conectado a Chrome existente en 127.0.0.1:{remote_port}"
+            except Exception:
+                pass
 
         # 2. Si no se pudo conectar, abrir una nueva instancia de Chrome
         try:

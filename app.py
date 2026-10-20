@@ -242,17 +242,6 @@ class SIIUPPApp:
         self.lbl_action_status = ttk.Label(action_row, text="", font=("Segoe UI", 9, "bold"))
         self.lbl_action_status.pack(side=tk.LEFT, pady=4)
 
-        # Conectar automáticamente si Chrome ya estaba en el puerto 9222
-        self.root.after(300, self._auto_connect_existing_chrome)
-
-    def _auto_connect_existing_chrome(self):
-        """Si Chrome ya está abierto con depuración remota, conectarse silenciosamente."""
-        ok, msg = self.browser_manager.connect_or_launch(9222)
-        if ok and "127.0.0.1:9222" in msg:
-            self.lbl_browser_status.config(text="🟢 Chrome conectado (Sesión activa)", foreground=self.COLOR_SUCCESS)
-            # Intentar detectar alumnos si ya está en la página
-            self.on_detect_students(silent=True)
-
     def on_open_chrome(self):
         """Abre o se conecta a Chrome en segundo plano."""
         def run():
@@ -277,41 +266,44 @@ class SIIUPPApp:
                 messagebox.showwarning("Navegador no conectado", "Primero presiona 'Abrir / Conectar Chrome'.")
             return
 
-        students = self.browser_manager.get_students()
-        if not students:
-            self.lbl_students_count.config(text="⚠️ No se detectó la tabla de alumnos.", foreground="#D97706")
+        def run():
+            self.lbl_students_count.config(text="🔍 Leyendo alumnos de Chrome...", foreground="#D97706")
+            students = self.browser_manager.get_students()
+            if not students:
+                self.lbl_students_count.config(text="⚠️ No se detectó la tabla de alumnos.", foreground="#D97706")
+                if not silent:
+                    messagebox.showwarning(
+                        "Tabla no encontrada",
+                        "Asegúrate de tener abierta la página de captura de calificaciones del grupo en Chrome (vCalificacionesVer2.php)."
+                    )
+                return
+
+            self.upp_students = students
+            self.lbl_students_count.config(
+                text=f"✅ {len(students)} alumnos detectados en el grupo.",
+                foreground=self.COLOR_SUCCESS
+            )
+
+            # Si ya hay un Excel cargado, recalcular el emparejamiento
+            if self.df_excel is not None:
+                self._update_matching_preview()
+            else:
+                self._populate_treeview([
+                    {
+                        "cuenta": s["cuenta"],
+                        "nombre_upp": s["nombre"],
+                        "nombre_excel": "-",
+                        "calificacion": "-",
+                        "metodo_match": "Pendiente de Excel",
+                        "encontrado": False
+                    }
+                    for s in self.upp_students
+                ])
+
             if not silent:
-                messagebox.showwarning(
-                    "Tabla no encontrada",
-                    "Asegúrate de tener abierta la página de captura de calificaciones del grupo en Chrome (vCalificacionesVer2.php)."
-                )
-            return
+                messagebox.showinfo("Alumnos Detectados", f"Se detectaron con éxito {len(students)} alumnos en el grupo de Chrome.")
 
-        self.upp_students = students
-        self.lbl_students_count.config(
-            text=f"✅ {len(students)} alumnos detectados en el grupo.",
-            foreground=self.COLOR_SUCCESS
-        )
-
-        # Si ya hay un Excel cargado, recalcular el emparejamiento
-        if self.df_excel is not None:
-            self._update_matching_preview()
-        else:
-            # Mostrar la lista de alumnos en el treeview sin notas aún
-            self._populate_treeview([
-                {
-                    "cuenta": s["cuenta"],
-                    "nombre_upp": s["nombre"],
-                    "nombre_excel": "-",
-                    "calificacion": "-",
-                    "metodo_match": "Pendiente de Excel",
-                    "encontrado": False
-                }
-                for s in self.upp_students
-            ])
-
-        if not silent:
-            messagebox.showinfo("Alumnos Detectados", f"Se detectaron con éxito {len(students)} alumnos en el grupo de Chrome.")
+        threading.Thread(target=run, daemon=True).start()
 
     def on_browse_excel(self):
         """Selecciona el archivo Excel y carga las pestañas."""
@@ -482,30 +474,36 @@ class SIIUPPApp:
             return
 
         self.lbl_action_status.config(text="⏳ Pegando calificaciones en Chrome...", foreground="#D97706")
-        self.root.update()
+        self.btn_paste.config(state="disabled")
 
-        pasted_count, errors = self.browser_manager.paste_grades(grades_to_paste, partial_idx)
+        def run_paste():
+            try:
+                pasted_count, errors = self.browser_manager.paste_grades(grades_to_paste, partial_idx)
 
-        if errors:
-            msg_err = "\n".join(errors[:5])
-            self.lbl_action_status.config(
-                text=f"⚠️ {pasted_count} calificaciones pegadas con {len(errors)} advertencias.",
-                foreground="#D97706"
-            )
-            messagebox.showwarning(
-                "Pegado con advertencias",
-                f"Se pegaron {pasted_count} calificaciones.\n\nDetalles de advertencias:\n{msg_err}"
-            )
-        else:
-            self.lbl_action_status.config(
-                text=f"🎉 ¡Éxito! Se pegaron las {pasted_count} calificaciones en {partial_name}.",
-                foreground=self.COLOR_SUCCESS
-            )
-            messagebox.showinfo(
-                "¡Calificaciones Pegadas!",
-                f"✅ Se pegaron con éxito las {pasted_count} calificaciones en la columna '{partial_name}'.\n\n"
-                f"Por favor, revisa en tu pantalla de Chrome que todo se vea correcto y haz clic en 'Guardar' cuando lo consideres conveniente."
-            )
+                if errors:
+                    msg_err = "\n".join(errors[:5])
+                    self.lbl_action_status.config(
+                        text=f"⚠️ {pasted_count} calificaciones pegadas con {len(errors)} advertencias.",
+                        foreground="#D97706"
+                    )
+                    messagebox.showwarning(
+                        "Pegado con advertencias",
+                        f"Se pegaron {pasted_count} calificaciones.\n\nDetalles de advertencias:\n{msg_err}"
+                    )
+                else:
+                    self.lbl_action_status.config(
+                        text=f"🎉 ¡Éxito! Se pegaron las {pasted_count} calificaciones en {partial_name}.",
+                        foreground=self.COLOR_SUCCESS
+                    )
+                    messagebox.showinfo(
+                        "¡Calificaciones Pegadas!",
+                        f"✅ Se pegaron con éxito las {pasted_count} calificaciones en la columna '{partial_name}'.\n\n"
+                        f"Por favor, revisa en tu pantalla de Chrome que todo se vea correcto y haz clic en 'Guardar' cuando lo consideres conveniente."
+                    )
+            finally:
+                self.btn_paste.config(state="normal")
+
+        threading.Thread(target=run_paste, daemon=True).start()
 
 
 def main():
