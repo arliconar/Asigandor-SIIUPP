@@ -1,10 +1,10 @@
 """
 Módulo central (core) para la interacción con Chrome (SIIUPP) y análisis de archivos Excel.
+Usa únicamente librerías estándar y openpyxl (puro Python, sin DLLs C de NumPy/Pandas).
 """
 
 import re
 import unicodedata
-import pandas as pd
 import openpyxl
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -44,27 +44,25 @@ class BrowserManager:
         Intenta conectarse a un Chrome ya abierto con puerto de depuración.
         Si no está disponible, lanza una nueva instancia de Chrome y navega al login.
         """
-        # Intentar conectar a Chrome existente en el puerto
+        # 1. Intentar conectar a Chrome existente en el puerto
         try:
             options = Options()
             options.add_experimental_option("debuggerAddress", f"127.0.0.1:{remote_port}")
             test_driver = webdriver.Chrome(options=options)
-            # Verificar si responde
             _ = test_driver.title
             self.driver = test_driver
             return True, f"Conectado a Chrome existente en 127.0.0.1:{remote_port}"
         except Exception:
             pass
 
-        # Si no se pudo conectar, abrir una nueva instancia de Chrome limpia y amigable
+        # 2. Si no se pudo conectar, abrir una nueva instancia de Chrome
         try:
             options = Options()
             options.add_argument("--start-maximized")
-            # Evitar banderas intrusivas de automatización para que el captcha y login funcionen sin trabas
             options.add_argument("--disable-blink-features=AutomationControlled")
             options.add_experimental_option("excludeSwitches", ["enable-automation"])
             options.add_experimental_option("useAutomationExtension", False)
-            
+
             self.driver = webdriver.Chrome(options=options)
             self.driver.get(self.UPP_LOGIN_URL)
             return True, "Nueva ventana de Chrome abierta en el portal de UPP."
@@ -94,7 +92,7 @@ class BrowserManager:
 
     def get_students(self) -> list[dict]:
         """
-        Extrae la lista de alumnos actualmente cargada en la tabla de vCalificacionesVer2.php.
+        Extrae dinámicamente la lista de alumnos actualmente cargada en la tabla de vCalificacionesVer2.php.
         Retorna: [{'cuenta': '2631127239', 'nombre': 'AMARO RAMIREZ NATALY ANAHI'}, ...]
         """
         if not self.is_connected():
@@ -171,8 +169,26 @@ class BrowserManager:
         return pasted_count, errors
 
 
+class ExcelTable:
+    """Estructura de datos ligera y 100% en Python puro para representar tablas de Excel."""
+
+    def __init__(self, columns: list[str], rows: list[dict]):
+        self.columns = columns
+        self.rows = rows
+
+    def __len__(self):
+        return len(self.rows)
+
+    def iterrows(self):
+        for idx, row in enumerate(self.rows):
+            yield idx, row
+
+    def head(self, n=30):
+        return ExcelTable(self.columns, self.rows[:n])
+
+
 class ExcelManager:
-    """Lector e interpretador de archivos Excel de calificaciones."""
+    """Lector e interpretador de archivos Excel usando openpyxl (sin dependencias C/NumPy)."""
 
     @staticmethod
     def get_sheet_names(file_path: str) -> list[str]:
@@ -200,51 +216,75 @@ class ExcelManager:
                 if term in norm.lower():
                     return sheet
 
-        # Si no hay coincidencia exacta por nombre de parcial, retorna la primera o según índice
         if 0 <= (partial_num - 1) < len(sheet_names):
             return sheet_names[partial_num - 1]
         return sheet_names[0] if sheet_names else ""
 
     @staticmethod
-    def load_sheet_data(file_path: str, sheet_name: str) -> pd.DataFrame:
+    def load_sheet_data(file_path: str, sheet_name: str) -> ExcelTable:
         """Carga la hoja detectando automáticamente la fila de encabezados."""
-        df_raw = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
+        wb = openpyxl.load_workbook(file_path, data_only=True)
+        if sheet_name not in wb.sheetnames:
+            ws = wb.active
+        else:
+            ws = wb[sheet_name]
+
+        all_rows = []
+        for row in ws.iter_rows(values_only=True):
+            if any(cell is not None and str(cell).strip() != "" for cell in row):
+                all_rows.append(list(row))
+        wb.close()
+
+        if not all_rows:
+            return ExcelTable([], [])
 
         # Buscar en las primeras 15 filas cuál contiene palabras clave de encabezados
-        header_row_idx = 0
+        header_idx = 0
         keywords = ["NOMBRE", "ALUMNO", "MATRICULA", "CUENTA", "TOTAL", "CALIFICACION", "CALIF"]
 
-        for idx, row in df_raw.head(15).iterrows():
-            row_str = " ".join([str(val).upper() for val in row.dropna()])
+        for idx, r in enumerate(all_rows[:15]):
+            row_str = " ".join([str(val).upper() for val in r if val is not None])
             matches = sum(1 for kw in keywords if kw in row_str)
             if matches >= 2:
-                header_row_idx = idx
+                header_idx = idx
                 break
 
-        # Volver a cargar con el encabezado correcto
-        df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row_idx)
-        # Limpiar nombres de columnas
-        df.columns = [str(c).strip() for c in df.columns]
-        # Eliminar filas vacías
-        df = df.dropna(how="all").reset_index(drop=True)
-        return df
+        header_raw = all_rows[header_idx]
+        columns = []
+        seen = {}
+        for i, c in enumerate(header_raw):
+            col_name = str(c).strip() if c is not None and str(c).strip() != "" else f"Columna_{i+1}"
+            if col_name in seen:
+                seen[col_name] += 1
+                col_name = f"{col_name}_{seen[col_name]}"
+            else:
+                seen[col_name] = 1
+            columns.append(col_name)
+
+        data_rows = []
+        for r in all_rows[header_idx + 1:]:
+            if not any(val is not None and str(val).strip() != "" for val in r):
+                continue
+            row_dict = {}
+            for col_name, val in zip(columns, r):
+                row_dict[col_name] = val
+            data_rows.append(row_dict)
+
+        return ExcelTable(columns, data_rows)
 
     @staticmethod
     def find_total_column(columns: list[str]) -> str:
         """Encuentra la columna correspondiente al Total o calificación final del parcial."""
-        # Prioridad 1: Coincidencia exacta con 'Total'
         for col in columns:
             norm = normalize_text(col)
             if norm == "TOTAL":
                 return col
 
-        # Prioridad 2: Que contenga 'TOTAL'
         for col in columns:
             norm = normalize_text(col)
             if "TOTAL" in norm:
                 return col
 
-        # Prioridad 3: 'CALIFICACION', 'CALIF', 'PROMEDIO'
         for col in columns:
             norm = normalize_text(col)
             if any(k in norm for k in ["CALIFICACION", "CALIF", "PROMEDIO"]):
@@ -273,7 +313,7 @@ class ExcelManager:
     def match_with_upp_students(
         cls,
         upp_students: list[dict],
-        df_excel: pd.DataFrame,
+        df_excel: ExcelTable,
         total_col: str,
         cuenta_col: str | None = None,
         nombre_col: str | None = None,
@@ -290,7 +330,7 @@ class ExcelManager:
         excel_records = []
         for idx, row in df_excel.iterrows():
             grade_raw = row.get(total_col, None)
-            if pd.isna(grade_raw):
+            if grade_raw is None or str(grade_raw).strip() == "" or str(grade_raw).lower() == "nan":
                 grade_val = ""
             else:
                 grade_val = grade_raw
@@ -308,7 +348,6 @@ class ExcelManager:
 
         matched_results = []
 
-        # Crear índices para búsqueda rápida
         excel_by_cuenta = {r["cuenta"]: r for r in excel_records if r["cuenta"]}
         excel_by_name = {r["nombre_norm"]: r for r in excel_records if r["nombre_norm"]}
 
@@ -337,7 +376,6 @@ class ExcelManager:
 
             # 4. Respaldo por orden de fila si coincide la cantidad
             if not match_record and upp_idx < len(excel_records):
-                # Si las cuentas/nombres no estaban disponibles en Excel, usar orden
                 if not col_cuenta and not col_nombre:
                     match_record = excel_records[upp_idx]
                     match_method = "Orden de lista"
@@ -353,4 +391,3 @@ class ExcelManager:
             })
 
         return matched_results
-
