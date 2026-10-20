@@ -8,14 +8,20 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from core import BrowserManager, ExcelManager, clean_matricula
+from core import (
+    BrowserManager,
+    ExcelManager,
+    clean_matricula,
+    get_chrome_profiles,
+    get_best_profile_id
+)
 
 
 class SIIUPPApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Asignador de Calificaciones SIIUPP")
-        self.root.geometry("980x750")
+        self.root.geometry("980x760")
         self.root.minsize(850, 600)
 
         # Managers
@@ -24,6 +30,7 @@ class SIIUPPApp:
         self.excel_file_path: str = ""
         self.df_excel = None
         self.matched_data: list[dict] = []
+        self.chrome_profiles = get_chrome_profiles()
 
         # Estilo visual
         self._configure_styles()
@@ -112,15 +119,36 @@ class SIIUPPApp:
         ttk.Label(card1, text="1. Navegador Chrome (SIIUPP)", style="SectionTitle.TLabel").pack(anchor="w")
         lbl_instr1 = ttk.Label(
             card1,
-            text="Abre Chrome, inicia sesión y elige tu grupo.\nAl ver las calificaciones, haz clic en 'Detectar Alumnos'.",
+            text="Abre Chrome con tu perfil, inicia sesión y elige tu grupo.\nAl ver las calificaciones, haz clic en 'Detectar Alumnos'.",
             foreground=self.COLOR_MUTED
         )
-        lbl_instr1.pack(anchor="w", pady=(3, 8))
+        lbl_instr1.pack(anchor="w", pady=(3, 6))
+
+        # Selector de perfil de Chrome
+        profile_row = tk.Frame(card1, bg=self.COLOR_CARD)
+        profile_row.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(profile_row, text="Perfil Chrome:", bg=self.COLOR_CARD, font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 6))
+        self.var_profile = tk.StringVar()
+        profile_displays = [p["display"] for p in self.chrome_profiles]
+        if not profile_displays:
+            profile_displays = ["Default"]
+
+        self.cb_profile = ttk.Combobox(profile_row, textvariable=self.var_profile, values=profile_displays, state="readonly")
+        self.cb_profile.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        best_id = get_best_profile_id(self.chrome_profiles)
+        for p in self.chrome_profiles:
+            if p["id"] == best_id:
+                self.var_profile.set(p["display"])
+                break
+        if not self.var_profile.get() and profile_displays:
+            self.var_profile.set(profile_displays[0])
 
         btn_row1 = tk.Frame(card1, bg=self.COLOR_CARD)
         btn_row1.pack(fill=tk.X, pady=4)
 
-        self.btn_open_chrome = ttk.Button(btn_row1, text="🚀 Abrir / Conectar Chrome", style="Primary.TButton", command=self.on_open_chrome)
+        self.btn_open_chrome = ttk.Button(btn_row1, text="🚀 Abrir Chrome", style="Primary.TButton", command=self.on_open_chrome)
         self.btn_open_chrome.pack(side=tk.LEFT, padx=(0, 6))
 
         self.btn_detect_students = ttk.Button(btn_row1, text="🔄 Detectar Alumnos", command=self.on_detect_students)
@@ -206,9 +234,8 @@ class SIIUPPApp:
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Tags de color para el treeview
-        self.tree.tag_configure("ok", background="#ECFDF5")         # verde claro
-        self.tree.tag_configure("missing", background="#FEF2F2")    # rojo claro
+        self.tree.tag_configure("ok", background="#ECFDF5")
+        self.tree.tag_configure("missing", background="#FEF2F2")
         self.tree.tag_configure("empty", background="#F9FAFB")
 
         # Panel Inferior: Acción de Pegar y Aviso de Seguridad
@@ -243,15 +270,40 @@ class SIIUPPApp:
         self.lbl_action_status.pack(side=tk.LEFT, pady=4)
 
     def on_open_chrome(self):
-        """Abre o se conecta a Chrome en segundo plano."""
-        def run():
+        """Abre o se conecta a Chrome cargando el perfil seleccionado."""
+        selected_display = self.var_profile.get()
+        selected_id = "Default"
+        for p in self.chrome_profiles:
+            if p.get("display") == selected_display:
+                selected_id = p["id"]
+                break
+
+        def run(force_close=False):
             self.lbl_browser_status.config(text="🟡 Conectando con Chrome...", foreground="#D97706")
-            ok, msg = self.browser_manager.connect_or_launch()
+            ok, msg = self.browser_manager.connect_or_launch(profile_id=selected_id, force_close_running=force_close)
+
+            if not ok and msg == "CHROME_RUNNING":
+                confirm = messagebox.askyesno(
+                    "Cerrar Chrome para abrir tu perfil",
+                    f"Google Chrome está actualmente abierto en tu computadora.\n\n"
+                    f"Para poder cargar tu perfil institucional ('{selected_display}') con tus contraseñas y cuentas guardadas, "
+                    f"Chrome necesita cerrarse antes de iniciarse.\n\n"
+                    f"¿Deseas cerrar las ventanas abiertas de Chrome ahora y continuar?"
+                )
+                if confirm:
+                    run(force_close=True)
+                else:
+                    self.lbl_browser_status.config(text="⚪ Apertura cancelada (Chrome sigue abierto)", foreground=self.COLOR_MUTED)
+                return
+
             if ok:
-                self.lbl_browser_status.config(text="🟢 Chrome conectado", foreground=self.COLOR_SUCCESS)
+                self.lbl_browser_status.config(text=f"🟢 Chrome conectado ({selected_display})", foreground=self.COLOR_SUCCESS)
                 messagebox.showinfo(
-                    "Chrome Listo",
-                    f"{msg}\n\n1. Inicia sesión en el portal.\n2. Elige tu grupo y dirígete a Calificaciones.\n3. Regresa aquí y presiona 'Detectar Alumnos'."
+                    "Chrome Listo con tu Perfil",
+                    f"Se abrió Google Chrome con el perfil '{selected_display}'.\n\n"
+                    f"1. Inicia sesión en SIIUPP (tus contraseñas deberían aparecer guardadas).\n"
+                    f"2. Selecciona tu grupo y entra a Captura de Calificaciones.\n"
+                    f"3. Regresa aquí y haz clic en 'Detectar Alumnos'."
                 )
             else:
                 self.lbl_browser_status.config(text="🔴 Error al conectar Chrome", foreground="#DC2626")
@@ -263,7 +315,7 @@ class SIIUPPApp:
         """Extrae los alumnos de la página actual de calificaciones en Chrome."""
         if not self.browser_manager.is_connected():
             if not silent:
-                messagebox.showwarning("Navegador no conectado", "Primero presiona 'Abrir / Conectar Chrome'.")
+                messagebox.showwarning("Navegador no conectado", "Primero presiona 'Abrir Chrome'.")
             return
 
         def run():
@@ -284,7 +336,6 @@ class SIIUPPApp:
                 foreground=self.COLOR_SUCCESS
             )
 
-            # Si ya hay un Excel cargado, recalcular el emparejamiento
             if self.df_excel is not None:
                 self._update_matching_preview()
             else:
@@ -322,12 +373,10 @@ class SIIUPPApp:
             sheet_names = ExcelManager.get_sheet_names(path)
             self.cb_sheet["values"] = sheet_names
 
-            # Intentar seleccionar la hoja adecuada según el parcial actual
             partial_num = self._get_selected_partial_num()
             best_sheet = ExcelManager.find_best_sheet(sheet_names, partial_num)
             self.var_sheet.set(best_sheet)
 
-            # Cargar datos de la hoja
             self._load_sheet_content(best_sheet)
         except Exception as e:
             messagebox.showerror("Error al leer Excel", f"No se pudo leer el archivo:\n{e}")
@@ -343,7 +392,6 @@ class SIIUPPApp:
         return 1
 
     def on_partial_changed(self, event=None):
-        """Al cambiar de parcial (ej. de Parcial 1 a Parcial 2), sugerir la hoja correspondiente."""
         if not self.excel_file_path or not self.cb_sheet["values"]:
             return
         partial_num = self._get_selected_partial_num()
@@ -365,7 +413,6 @@ class SIIUPPApp:
             cols = list(self.df_excel.columns)
             self.cb_total_col["values"] = cols
 
-            # Autodetectar columna total
             best_total = ExcelManager.find_total_column(cols)
             self.var_total_col.set(best_total)
 
@@ -386,14 +433,13 @@ class SIIUPPApp:
             return
 
         if not self.upp_students:
-            # Si aún no se han detectado alumnos en Chrome, mostrar las filas del Excel directamente
             auto_c, auto_n = ExcelManager.find_identity_columns(list(self.df_excel.columns))
             preview_rows = []
             for idx, r in self.df_excel.head(30).iterrows():
                 preview_rows.append({
                     "cuenta": clean_matricula(r.get(auto_c, "")) if auto_c else "",
                     "nombre_upp": "— (Detecta alumnos en Chrome)",
-                    "nombre_excel": str(r.get(auto_n, r.iloc[0] if len(r) > 0 else "")),
+                    "nombre_excel": str(r.get(auto_n, r.get(self.df_excel.columns[0], ""))),
                     "calificacion": r.get(total_col, ""),
                     "metodo_match": "Vista previa Excel",
                     "encontrado": True
@@ -451,10 +497,9 @@ class SIIUPPApp:
             messagebox.showwarning("Sin datos", "Selecciona un archivo de Excel y verifica la columna de notas.")
             return
 
-        partial_idx = self._get_selected_partial_num() - 1  # 0 para Parcial 1, 1 para Parcial 2, 2 para Parcial 3
+        partial_idx = self._get_selected_partial_num() - 1
         partial_name = self.var_partial.get()
 
-        # Filtrar calificaciones válidas
         grades_to_paste = {}
         for item in self.matched_data:
             grade = item.get("calificacion")
@@ -524,4 +569,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
